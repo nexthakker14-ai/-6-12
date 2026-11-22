@@ -1,7 +1,7 @@
-# MEXC Telegram signal bot — 5m + 10m
+# MEXC Telegram signal bot — 5m + 10m (10m aggregated from two MEXC 5m candles)
 
 ## What it monitors
-- MEXC USDT perpetual candles on both native 5-minute and 10-minute timeframes.
+- MEXC USDT perpetual candles on both native 5-minute and 10-minute (10-minute bars are locally aggregated from two consecutive MEXC 5-minute bars) timeframes.
 - Symbols are controlled by `SYMBOLS` (default: `BTCUSDT`). Set `SYMBOLS=BTCUSDT` for BTC only.
 - P1–P5 pattern rules; P4/P5 share identical conditions and are grouped in one label.
 - PRE is sent up to 120 seconds before candle #6 closes when the live candle currently matches.

@@ -46,23 +46,58 @@ def send(msg):
     return ok
 
 def fetch(symbol, tf_seconds):
+    """Fetch MEXC Min5 candles; synthesize 10m candles from aligned pairs.
+
+    MEXC Futures documents Min1/Min5/Min15/... but not Min10. Therefore
+    10-minute candles are built locally from two consecutive 5-minute bars.
+    """
     now = int(time.time())
-    interval = "Min5" if tf_seconds == 300 else "Min10"
+    # MEXC Futures API does not provide Min10; aggregate two Min5 candles.
+    source_interval = "Min5"
+    source_seconds = 300
     r = http.get(f"{API.rstrip('/')}/{symbol}",
-                 params={"interval": interval, "limit": 300, "end": now}, timeout=20)
+                 params={"interval": source_interval, "limit": 600, "end": now}, timeout=20)
     r.raise_for_status()
     payload = r.json()
-    if not payload.get("success"): raise RuntimeError(f"MEXC API error: {payload}")
+    if not payload.get("success"):
+        raise RuntimeError(f"MEXC API error ({source_interval}): {payload}")
     d = payload.get("data") or {}
     if not isinstance(d, dict) or any(k not in d for k in ("time", "open", "close")):
         raise RuntimeError(f"Unexpected MEXC response: {str(d)[:300]}")
     n = min(len(d["time"]), len(d["open"]), len(d["close"]))
-    closed, live = [], None
+    raw = []
     for i in range(n):
-        ts = int(d["time"][i]); c = {"ts": ts, "open": float(d["open"][i]), "close": float(d["close"][i])}
-        if ts + tf_seconds <= now: closed.append(c)
-        elif ts <= now < ts + tf_seconds: live = c
-    closed.sort(key=lambda x: x["ts"])
+        raw.append({"ts": int(d["time"][i]),
+                    "open": float(d["open"][i]),
+                    "close": float(d["close"][i])})
+    raw.sort(key=lambda x: x["ts"])
+
+    if tf_seconds == 300:
+        closed = [c for c in raw if c["ts"] + 300 <= now]
+        live = next((c for c in reversed(raw)
+                     if c["ts"] <= now < c["ts"] + 300), None)
+        return closed, live
+
+    if tf_seconds != 600:
+        raise ValueError(f"Unsupported timeframe: {tf_seconds}")
+
+    buckets = {}
+    for c in raw:
+        bucket_ts = (c["ts"] // 600) * 600
+        buckets.setdefault(bucket_ts, []).append(c)
+
+    closed, live = [], None
+    for bucket_ts in sorted(buckets):
+        parts = sorted(buckets[bucket_ts], key=lambda x: x["ts"])
+        # Require the exact two aligned 5-minute components for a completed 10m bar.
+        first = next((x for x in parts if x["ts"] == bucket_ts), None)
+        second = next((x for x in parts if x["ts"] == bucket_ts + 300), None)
+        if first and second and bucket_ts + 600 <= now:
+            closed.append({"ts": bucket_ts, "open": first["open"], "close": second["close"]})
+        elif bucket_ts <= now < bucket_ts + 600 and first:
+            latest = second if second and second["ts"] <= now else first
+            live = {"ts": bucket_ts, "open": first["open"], "close": latest["close"]}
+
     return closed, live
 
 def read_state(path):

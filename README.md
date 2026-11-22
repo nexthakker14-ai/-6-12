@@ -1,32 +1,27 @@
-# BTCUSDT + ETHUSDT 5m Telegram signal bot
+# MEXC Telegram signal bot — 5m + 10m
 
-## Logic
-- MEXC USDT Perpetual native 5-minute candles.
-- P1: candle #1, #2 and #6 match the base colour; #3–#5 are unrestricted.
-- P2: #1, #2, #3 and #6 match; #4–#5 unrestricted.
-- P3: #1, #2, #3, #4 and #6 match; #5 unrestricted.
-- P4 and P5: all six match. They are kept as separate rule names but grouped as one P4/P5 alert to prevent duplicate signals.
-- Base GREEN => confirmed SHORT; base RED => confirmed LONG.
-- PRE: when no more than 120 seconds remain before candle #6 closes, if the live #6 colour currently matches the base and the first five candles meet a rule. If #6 changes before close, no confirmed signal is sent.
-- Signal only after #6 is closed.
-- After signal, inspect the next six CLOSED candles. First target colour is WIN 1/6 ... WIN 6/6. If none of six has target colour, LOSS 6/6.
-- Doji (open == close) is neither GREEN nor RED.
-- No automatic orders.
+## What it monitors
+- MEXC USDT perpetual candles on both native 5-minute and 10-minute timeframes.
+- Symbols are controlled by `SYMBOLS` (default: `BTCUSDT`). Set `SYMBOLS=BTCUSDT` for BTC only.
+- P1–P5 pattern rules; P4/P5 share identical conditions and are grouped in one label.
+- PRE is sent up to 120 seconds before candle #6 closes when the live candle currently matches.
+- Confirmed signal is sent only after candle #6 closes.
+- Each signal is checked against the next six CLOSED candles of its own timeframe. First target-colour candle = WIN n/6; otherwise LOSS 6/6.
+- GREEN base produces SHORT; RED base produces LONG. Doji candles do not qualify.
+- No automatic orders are placed.
 
-## Railway
-Deploy this folder from GitHub. Add variables:
-- TELEGRAM_BOT_TOKEN
-- TELEGRAM_CHAT_ID
-- SYMBOLS=BTCUSDT,ETHUSDT
-- POLL_SECONDS=3
-- TEST_MODE=false
+## Telegram message format
+PRE, signal and result messages contain only symbol/exchange, timeframe, rule and direction (plus the PRE/result heading).
 
-Persistent storage is recommended for state files `state_BTC_USDT.json` and `state_ETH_USDT.json`.
+## Railway variables
+- `TELEGRAM_BOT_TOKEN` — BotFather token
+- `TELEGRAM_CHAT_ID` — chat ID (comma-separated IDs supported)
+- `SYMBOLS=BTCUSDT` (add `,ETHUSDT` if needed)
+- `POLL_SECONDS=3`
+- `TEST_MODE=false`
+- `STATE_DIR=/data` (recommended when a Railway Volume is mounted at `/data`)
 
-## Local test
-Python 3.10+:
-```bash
-pip install -r requirements.txt
-TEST_MODE=true python main.py
-```
-The test mode prints configuration only; it does not call MEXC or Telegram.
+Start command: `python main.py`. Python 3.9+ is required (`zoneinfo`).
+
+## Important
+The code has been syntax-checked and UTF-8 checked. This does not constitute a live API/Telegram integration test. Confirm MEXC API availability in Railway logs after deployment.

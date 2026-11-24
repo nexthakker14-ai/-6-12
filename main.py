@@ -23,7 +23,6 @@ http = requests.Session()
 http.headers.update({"User-Agent": "Mozilla/5.0 MEXC-MTF-Pattern-Bot/3.0"})
 
 RULES = {
-    "P1": (1, 2, 6),
     "P2": (1, 2, 3, 6),
     "P3": (1, 2, 3, 4, 6),
     "P4": (1, 2, 3, 4, 5, 6),
@@ -239,7 +238,30 @@ class Engine:
         if not (0 < remain <= 120):
             return
 
-        # Старі правила P1-P5 (перші 6 свічок + поточна 7-ма).
+        # FIVE: 4 closed candles and live fifth candle are the same required colour.
+        start5 = live["ts"] - 4 * self.tf
+        first4 = self.seq(start5, 4)
+        if all(first4):
+            cols4 = [candle_color(c) for c in first4]
+            live_color = candle_color(live)
+            if (cols4[0] in ("RED", "GREEN")
+                    and all(color == cols4[0] for color in cols4)
+                    and live_color == cols4[0]):
+                base = cols4[0]
+                key = f"{start5}:{base}:FIVE"
+                if key not in self.state["pre"]:
+                    direction = "LONG" if base == "RED" else "SHORT"
+                    text = self.msg(
+                        "⚠️ ПОПЕРЕДЖЕННЯ PRE", "FIVE", direction,
+                        "4 попередні свічки та live 5-та одного кольору. Сигнал після закриття 5-ї."
+                    )
+                    if send(text):
+                        self.state["pre"].append(key)
+                        self.state["pre"] = self.state["pre"][-1500:]
+                        write_state(self.state, self.path)
+                        log.info("PRE %s %s FIVE %s", self.symbol, self.tf_label, direction)
+
+        # Старі правила P2-P5 (перші 6 свічок + поточна 7-ма).
         start = live["ts"] - 6 * self.tf
         first6 = self.seq(start, 6)
 
@@ -305,54 +327,83 @@ class Engine:
         still = []
 
         for p in self.state["pending"]:
-
             if ts <= p["signal_ts"]:
                 still.append(p)
                 continue
 
             idx = (ts - p["signal_ts"]) // self.tf
 
+            if p.get("rule") == "FIVE":
+                checkpoints = (6, 7, 8, 9, 13)
+                if idx not in checkpoints:
+                    still.append(p)
+                    continue
+                wanted = "GREEN" if p["direction"] == "LONG" else "RED"
+                checkpoint_pos = checkpoints.index(idx) + 1
+                if current == wanted:
+                    send(self.msg(
+                        f"✅ РЕЗУЛЬТАТ: WIN на свічці #{idx} ({checkpoint_pos}/5)",
+                        p["rule"], p["direction"]
+                    ))
+                    log.info("WIN %s %s FIVE %s candle #%d (%d/5)",
+                             self.symbol, self.tf_label, p["direction"], idx, checkpoint_pos)
+                elif idx == 13:
+                    send(self.msg(
+                        "❌ РЕЗУЛЬТАТ: LOSS на свічці #13 (5/5)",
+                        p["rule"], p["direction"]
+                    ))
+                    log.info("LOSS %s %s FIVE %s at #13",
+                             self.symbol, self.tf_label, p["direction"])
+                else:
+                    p["progress"] = checkpoint_pos
+                    still.append(p)
+                continue
+
             if not 1 <= idx <= CHECK_N:
                 continue
 
-            wanted = (
-                "GREEN" if p["direction"] == "LONG"
-                else "RED"
-            )
-
+            wanted = "GREEN" if p["direction"] == "LONG" else "RED"
             if current == wanted:
                 send(self.msg(
-                    f"✅ РЕЗУЛЬТАТ: WIN {idx}/6",
-                    p["rule"],
-                    p["direction"]
+                    f"✅ РЕЗУЛЬТАТ: WIN {idx}/6", p["rule"], p["direction"]
                 ))
-
-                log.info(
-                    "WIN %s %s %s %s %d/6",
-                    self.symbol, self.tf_label,
-                    p["rule"], p["direction"], idx
-                )
-
+                log.info("WIN %s %s %s %s %d/6",
+                         self.symbol, self.tf_label, p["rule"], p["direction"], idx)
             elif idx == CHECK_N:
                 send(self.msg(
-                    "❌ РЕЗУЛЬТАТ: LOSS 6/6",
-                    p["rule"],
-                    p["direction"]
+                    "❌ РЕЗУЛЬТАТ: LOSS 6/6", p["rule"], p["direction"]
                 ))
-
-                log.info(
-                    "LOSS %s %s %s %s 6/6",
-                    self.symbol, self.tf_label,
-                    p["rule"], p["direction"]
-                )
-
+                log.info("LOSS %s %s %s %s 6/6",
+                         self.symbol, self.tf_label, p["rule"], p["direction"])
             else:
                 p["progress"] = idx
                 still.append(p)
 
         self.state["pending"] = still
 
-        # Старі правила P1-P5: оброблювана свічка є сьомою.
+        # FIVE signal: 5 consecutive RED = LONG; 5 consecutive GREEN = SHORT.
+        start5 = ts - 4 * self.tf
+        first4 = self.seq(start5, 4)
+        if all(first4):
+            cols4 = [candle_color(x) for x in first4]
+            if (cols4[0] in ("RED", "GREEN")
+                    and all(color == cols4[0] for color in cols4)
+                    and current == cols4[0]):
+                base = cols4[0]
+                rule = "FIVE"
+                key = f"{start5}:{base}:{rule}"
+                if key not in self.state["seen"]:
+                    direction = "LONG" if base == "RED" else "SHORT"
+                    if send(self.msg("🔔 ПІДТВЕРДЖЕНИЙ СИГНАЛ", rule, direction)):
+                        self.state["seen"].append(key)
+                        self.state["seen"] = self.state["seen"][-3000:]
+                        self.state["pending"].append({
+                            "rule": rule, "direction": direction,
+                            "start_ts": start5, "signal_ts": ts, "progress": 0
+                        })
+                        log.info("SIGNAL %s %s FIVE %s", self.symbol, self.tf_label, direction)
+
+        # Старі правила P2-P5: оброблювана свічка є сьомою.
         start7 = ts - 6 * self.tf
         first6 = self.seq(start7, 6)
 
@@ -456,7 +507,7 @@ def main():
         send(
             "🤖 БОТ ЗАПУЩЕНО\n"
             "MEXC Futures | 5 хв + 10 хв\n"
-            "P1–P5 + EIGHT | PRE / SIGNAL / WIN-LOSS"
+            "P2–P5 + FIVE + EIGHT | PRE / SIGNAL / WIN-LOSS"
         )
 
     while True:
@@ -479,8 +530,8 @@ if __name__ == "__main__":
         print("Symbols:", ", ".join(SYMBOLS))
         print("Timeframes: 5 minutes and 10 minutes")
         print("Rules:", ", ".join(RULES), "and EIGHT (8 consecutive same-colour candles)")
-        print("PRE: up to 120 seconds before candle #7 close for P1-P5; before #8 close for EIGHT")
-        print("Signal: P1-P5 after #7 closes; EIGHT after #8 closes with 8 consecutive same-colour candles")
+        print("PRE: 2 minutes before candle #5 close for FIVE; up to 120 seconds before candle #7 close for P2-P5; before #8 close for EIGHT")
+        print("Signal: FIVE after #5 closes; P2-P5 after #7 closes; EIGHT after #8 closes with 8 consecutive same-colour candles")
         print("Outcome: next six closed candles; WIN on first target colour, else LOSS 6/6")
     else:
         main()

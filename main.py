@@ -228,57 +228,75 @@ class Engine:
 
         return "\n".join(lines)
 
-    # ПОПЕРЕДЖЕННЯ ЗА 2 ХВИЛИНИ ДО ЗАКРИТТЯ 7-Ї СВІЧКИ
+    # PRE для чинних P1-P5: за 2 хвилини до закриття 7-ї свічки.
+    # PRE для EIGHT: за 2 хвилини до закриття 8-ї свічки,
+    # якщо попередні 7 закритих і поточна незакрита свічки одного кольору.
     def pre_alert(self, live):
         if not live:
             return
 
-        start = live["ts"] - 6 * self.tf
-        first6 = self.seq(start, 6)
-
-        if not all(first6):
-            return
-
         remain = self.tf - (int(time.time()) - live["ts"])
-
         if not (0 < remain <= 120):
             return
 
-        cols = [candle_color(c) for c in first6]
+        # Старі правила P1-P5 (перші 6 свічок + поточна 7-ма).
+        start = live["ts"] - 6 * self.tf
+        first6 = self.seq(start, 6)
 
-        if any(x not in ("GREEN", "RED") for x in cols):
+        if all(first6):
+            cols = [candle_color(c) for c in first6]
+            if all(x in ("GREEN", "RED") for x in cols):
+                base = cols[0]
+                rules = self.matched(first6, base)
+                if rules:
+                    rule = ", ".join(rules)
+                    key = f"{start}:{base}:{rule}"
+                    if key not in self.state["pre"]:
+                        direction = "SHORT" if base == "GREEN" else "LONG"
+                        text = self.msg(
+                            "⚠️ ПОПЕРЕДЖЕННЯ PRE",
+                            rule,
+                            direction,
+                            "Очікується закриття 7-ї свічки. Сигнал буде лише якщо її колір збігається з 6-ю."
+                        )
+                        if send(text):
+                            self.state["pre"].append(key)
+                            self.state["pre"] = self.state["pre"][-1500:]
+                            write_state(self.state, self.path)
+                            log.info("PRE %s %s %s %s", self.symbol, self.tf_label, rule, direction)
+
+        # Нове правило EIGHT: 7 попередніх свічок одного кольору,
+        # а поточна (8-ма) вже має бути цього самого кольору.
+        start8 = live["ts"] - 7 * self.tf
+        first7 = self.seq(start8, 7)
+        if not all(first7):
             return
 
-        base = cols[0]
-        rules = self.matched(first6, base)
-
-        if not rules:
+        cols7 = [candle_color(c) for c in first7]
+        live_color = candle_color(live)
+        if (cols7[0] not in ("GREEN", "RED")
+                or any(color != cols7[0] for color in cols7)
+                or live_color != cols7[0]):
             return
 
-        rule = ", ".join(rules)
-        key = f"{start}:{base}:{rule}"
-
+        base = cols7[0]
+        rule = "EIGHT"
+        key = f"{start8}:{base}:{rule}"
         if key in self.state["pre"]:
             return
 
         direction = "SHORT" if base == "GREEN" else "LONG"
-
         text = self.msg(
             "⚠️ ПОПЕРЕДЖЕННЯ PRE",
             rule,
             direction,
-            "Очікується закриття 7-ї свічки. Сигнал буде лише якщо її колір збігається з 6-ю."
+            "Попередні 7 свічок і поточна 8-ма мають однаковий колір. Очікується закриття 8-ї свічки."
         )
-
         if send(text):
             self.state["pre"].append(key)
             self.state["pre"] = self.state["pre"][-1500:]
             write_state(self.state, self.path)
-
-            log.info(
-                "PRE %s %s %s %s",
-                self.symbol, self.tf_label, rule, direction
-            )
+            log.info("PRE %s %s %s %s", self.symbol, self.tf_label, rule, direction)
 
     # ПЕРЕВІРКА РЕЗУЛЬТАТУ НА НАСТУПНИХ 6 СВІЧКАХ
     def process_closed(self, c):
@@ -334,58 +352,59 @@ class Engine:
 
         self.state["pending"] = still
 
-        # СВІЧКА, ЯКА ОБРОБЛЯЄТЬСЯ, — СЬОМА
-        start = ts - 6 * self.tf
-        s = self.seq(start, 6)
+        # Старі правила P1-P5: оброблювана свічка є сьомою.
+        start7 = ts - 6 * self.tf
+        first6 = self.seq(start7, 6)
 
-        if not all(s):
-            return
+        if all(first6):
+            cols = [candle_color(x) for x in first6]
+            if all(x in ("GREEN", "RED") for x in cols):
+                # Сьома свічка має бути того самого кольору, що й шоста.
+                if current in ("GREEN", "RED") and current == cols[5]:
+                    base = cols[0]
+                    rules = self.matched(first6, base)
+                    if rules:
+                        rule = ", ".join(rules)
+                        key = f"{start7}:{base}:{rule}"
+                        if key not in self.state["seen"]:
+                            direction = "SHORT" if base == "GREEN" else "LONG"
+                            if send(self.msg("🔔 ПІДТВЕРДЖЕНИЙ СИГНАЛ", rule, direction)):
+                                self.state["seen"].append(key)
+                                self.state["seen"] = self.state["seen"][-3000:]
+                                self.state["pending"].append({
+                                    "rule": rule,
+                                    "direction": direction,
+                                    "start_ts": start7,
+                                    "signal_ts": ts,
+                                    "progress": 0
+                                })
+                                log.info("SIGNAL %s %s %s %s", self.symbol, self.tf_label, rule, direction)
 
-        cols = [candle_color(x) for x in s]
-        current = candle_color(c)
-
-        if any(x not in ("GREEN", "RED") for x in cols):
-            return
-
-        # СЬОМА СВІЧКА МАЄ БУТИ ТАКОГО САМОГО КОЛЬОРУ, ЯК ШОСТА
-        if current not in ("GREEN", "RED") or current != cols[5]:
-            return
-
-        base = cols[0]
-        rules = self.matched(s, base)
-
-        if not rules:
-            return
-
-        rule = ", ".join(rules)
-        key = f"{start}:{base}:{rule}"
-
-        if key in self.state["seen"]:
-            return
-
-        direction = "SHORT" if base == "GREEN" else "LONG"
-
-        # СИГНАЛ ОДРАЗУ ПІСЛЯ ЗАКРИТТЯ СЬОМОЇ СВІЧКИ
-        if send(self.msg(
-            "🔔 ПІДТВЕРДЖЕНИЙ СИГНАЛ",
-            rule,
-            direction
-        )):
-            self.state["seen"].append(key)
-            self.state["seen"] = self.state["seen"][-3000:]
-
-            self.state["pending"].append({
-                "rule": rule,
-                "direction": direction,
-                "start_ts": start,
-                "signal_ts": ts,
-                "progress": 0
-            })
-
-            log.info(
-                "SIGNAL %s %s %s %s",
-                self.symbol, self.tf_label, rule, direction
-            )
+        # НОВЕ ПРАВИЛО EIGHT: рівноцінна умова — 8 поспіль зелених або 8 поспіль червоних.
+        # Сигнал надсилається після закриття восьмої свічки.
+        start8 = ts - 7 * self.tf
+        first7 = self.seq(start8, 7)
+        if all(first7):
+            cols7 = [candle_color(x) for x in first7]
+            if (cols7[0] in ("GREEN", "RED")
+                    and all(color == cols7[0] for color in cols7)
+                    and current == cols7[0]):
+                base = cols7[0]
+                rule = "EIGHT"
+                key = f"{start8}:{base}:{rule}"
+                if key not in self.state["seen"]:
+                    direction = "SHORT" if base == "GREEN" else "LONG"
+                    if send(self.msg("🔔 ПІДТВЕРДЖЕНИЙ СИГНАЛ", rule, direction)):
+                        self.state["seen"].append(key)
+                        self.state["seen"] = self.state["seen"][-3000:]
+                        self.state["pending"].append({
+                            "rule": rule,
+                            "direction": direction,
+                            "start_ts": start8,
+                            "signal_ts": ts,
+                            "progress": 0
+                        })
+                        log.info("SIGNAL %s %s EIGHT %s", self.symbol, self.tf_label, direction)
 
     def cycle(self, closed, live):
         if not self.candles:
@@ -437,7 +456,7 @@ def main():
         send(
             "🤖 БОТ ЗАПУЩЕНО\n"
             "MEXC Futures | 5 хв + 10 хв\n"
-            "P1–P5 | PRE / SIGNAL / WIN-LOSS"
+            "P1–P5 + EIGHT | PRE / SIGNAL / WIN-LOSS"
         )
 
     while True:
@@ -459,9 +478,9 @@ if __name__ == "__main__":
         print("TEST MODE: UTF-8 source OK")
         print("Symbols:", ", ".join(SYMBOLS))
         print("Timeframes: 5 minutes and 10 minutes")
-        print("Rules:", ", ".join(RULES))
-        print("PRE: up to 120 seconds before candle #7 close")
-        print("Signal: after candle #7 closes, only if #7 matches #6")
+        print("Rules:", ", ".join(RULES), "and EIGHT (8 consecutive same-colour candles)")
+        print("PRE: up to 120 seconds before candle #7 close for P1-P5; before #8 close for EIGHT")
+        print("Signal: P1-P5 after #7 closes; EIGHT after #8 closes with 8 consecutive same-colour candles")
         print("Outcome: next six closed candles; WIN on first target colour, else LOSS 6/6")
     else:
         main()
